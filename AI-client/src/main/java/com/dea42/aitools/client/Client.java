@@ -9,6 +9,10 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.ResourceBundle;
 
 import javax.imageio.ImageIO;
@@ -44,42 +48,38 @@ public class Client {
 	private String markedFolder = "./marked";
 	private String labeledFolder = "./labeled";
 	private String debugFolder = "./debug";
-
-	public String getMarkedFolder() {
-		return markedFolder;
-	}
-
-	public void setMarkedFolder(String markedFolder) {
-		this.markedFolder = markedFolder;
-	}
-
-	public String getLabeledFolder() {
-		return labeledFolder;
-	}
-
-	public void setLabeledFolder(String labeledFolder) {
-		this.labeledFolder = labeledFolder;
-	}
-
-	public String getDebugFolder() {
-		return debugFolder;
-	}
-
-	public void setDebugFolder(String debugFolder) {
-		this.debugFolder = debugFolder;
-	}
+	private Map<String, Integer> classes = new HashMap<>();
+	private int lastCls = 0;
 
 	private String host = "http://10.10.2.183:32168";
 
-	public Client(String host, String newFolder) {
+	public Client(String host, String newFolder, String markedFolder, String labeledFolder, String debugFolder,
+			Map<String, Integer> classes) {
 		this.newFolder = newFolder;
 		this.host = host;
+		this.markedFolder = markedFolder;
+		this.labeledFolder = labeledFolder;
+		this.debugFolder = debugFolder;
+		this.classes = classes;
 	}
 
 	public Client() {
 		ResourceBundle bundle = ResourceBundle.getBundle("client");
 		this.host = bundle.getString("host");
 		this.newFolder = bundle.getString("folder.new");
+		this.markedFolder = bundle.getString("folder.marked");
+		this.labeledFolder = bundle.getString("folder.labeled");
+		this.debugFolder = bundle.getString("folder.debug");
+		try {
+			String[] cls = bundle.getStringArray("classes");
+			int i = 1;
+			for (String c : cls) {
+				classes.put(c, i++);
+			}
+			lastCls = i;
+		} catch (Exception e) {
+			// ignore
+		}
 	}
 
 	private String doPost(HttpEntity params, String url) throws IOException {
@@ -117,25 +117,33 @@ public class Client {
 
 	}
 
-	/*
-	 * {"confidence":0.49429088830947876,"label":"cat_grey","x_min":383,"y_min":294,
-	 * "x_max":512,"y_max":358}
+	/**
+	 * Draw the detections on an image.
+	 * 
+	 * @param model       name to label with
+	 * @param img         BufferedImage to draw on
+	 * @param predictions JSONArray with detections info like
+	 *                    [{"confidence":0.49429088830947876,"label":"cat_grey","x_min":383,"y_min":294,"x_max":512,"y_max":358}]
+	 * @param c           Color to draw in.
+	 * @return marked up BufferedImage
 	 */
-	public BufferedImage markImg(String model, BufferedImage img, JSONObject jobj, Color c) {
+	public BufferedImage markImg(String model, BufferedImage img, JSONArray predictions, Color c) {
 		// Obtain the Graphics2D context associated with the BufferedImage.
 		Graphics2D g = img.createGraphics();
+		g.setColor(c);
+		for (int i = 0; i < predictions.length(); i++) {
+			JSONObject jobj = predictions.getJSONObject(i);
+			// Draw on the BufferedImage via the graphics context.
+			int x = jobj.optInt("x_min");
+			int y = jobj.optInt("y_min");
+			int width = jobj.optInt("x_max") - x;
+			int height = jobj.optInt("y_max") - y;
 
-		// Draw on the BufferedImage via the graphics context.
-		int x = jobj.optInt("x_min");
-		int y = jobj.optInt("y_min");
-		int width = jobj.optInt("x_max") - x;
-		int height = jobj.optInt("y_max") - y;
-
-		g.drawRect(x, y, width, height);
-		g.drawString(model+"_"+jobj.getString("label"), x, y);
+			g.drawRect(x, y, width, height);
+			g.drawString(model + "_" + jobj.getString("label"), x, y);
+		}
 		// Clean up -- dispose the graphics context that was created.
 		g.dispose();
-
 		return img;
 	}
 
@@ -144,18 +152,19 @@ public class Client {
 	 * debugFolder/class/idx.fileName<br>
 	 * Mainly used for easily checking
 	 * 
-	 * @param file to read from
-	 * @param ja   JSONArray of detections
+	 * @param file        to read from
+	 * @param predictions JSONArray of detections
+	 * @param model       name of model that made the detections
 	 * @return number of detections that match the class the source file came from.
 	 * @throws JSONException
 	 * @throws IOException
 	 */
-	public int cropImgs(File file, JSONArray ja) throws JSONException, IOException {
+	public int cropImgs(File file, JSONArray predictions, String model) throws JSONException, IOException {
 		BufferedImage img = ImageIO.read(file);
 		String cls = file.getParentFile().getName();
 		int matches = 0;
-		for (int i = 0; i < ja.length(); i++) {
-			JSONObject jobj = ja.getJSONObject(i);
+		for (int i = 0; i < predictions.length(); i++) {
+			JSONObject jobj = predictions.getJSONObject(i);
 			int x = jobj.optInt("x_min");
 			int y = jobj.optInt("y_min");
 			int width = jobj.optInt("x_max") - x;
@@ -164,9 +173,48 @@ public class Client {
 			if (cls.equals(dcls))
 				matches++;
 			BufferedImage simg = img.getSubimage(x, y, width, height);
-			writeImg(getDebugFolder(), dcls + "/" + i + "." + file.getName(), simg);
+			int conf = (int) (jobj.getFloat("confidence") * 100);
+			writeImg(getDebugFolder(), dcls + "/" + model + "." + i + "." + conf + "." + file.getName(), simg);
 		}
 		return matches;
+	}
+
+	public void writeMap(File file, JSONArray predictions, String model) throws JSONException, IOException {
+		BufferedImage img = ImageIO.read(file);
+		StringBuilder tags = new StringBuilder();
+		int h = img.getHeight();
+		int w = img.getWidth();
+		for (int i = 0; i < predictions.length(); i++) {
+			JSONObject jobj = predictions.getJSONObject(i);
+			int xmin = jobj.optInt("x_min");
+			int ymin = jobj.optInt("y_min");
+			int xmax = jobj.optInt("x_max") - xmin;
+			int ymax = jobj.optInt("y_max") - ymin;
+			float xcenter = (xmin + (float) (xmax - xmin) / 2) / w;
+			float ycenter = (ymin + (float) (ymax - ymin) / 2) / h;
+			float xwidth = (float) (xmax - xmin) / w;
+			float yheight = (float) (ymax - ymin) / h;
+			String dcls = jobj.getString("label");
+			int idx = classes.getOrDefault(dcls,0);
+			if (idx == 0) {
+				classes.put(dcls, lastCls++);
+			}
+			tags.append(idx + " " + String.format("%.6f", xcenter) + " " + String.format("%.6f", ycenter) + " "
+					+ String.format("%.6f", xwidth) + " " + String.format("%.6f%n", yheight));
+			int u = dcls.indexOf('_');
+			if (u > 0) {
+				dcls = dcls.substring(0, u);
+				idx = classes.getOrDefault(dcls,0);
+				if (idx == 0) {
+					classes.put(dcls, lastCls++);
+				}
+				tags.append(idx + " " + String.format("%.6f", xcenter) + " " + String.format("%.6f", ycenter) + " "
+						+ String.format("%.6f", xwidth) + " " + String.format("%.6f%n", yheight));
+			}
+		}
+		if (tags.length() > 0)
+			Files.write(Paths.get(getMarkedFolder(), model + "." + file.getName() + ".txt"),
+					tags.toString().getBytes());
 	}
 
 	public void writeImg(String folder, String path, BufferedImage bufferedImage) throws IOException {
@@ -192,6 +240,13 @@ public class Client {
 		throw new IOException(fileToUse.getAbsolutePath() + " does not exist");
 	}
 
+	public JSONObject detect(String model, String imagePath, String minConfidence) throws IOException {
+		MultipartEntityBuilder reqEntity = MultipartEntityBuilder.create().setMode(HttpMultipartMode.STRICT);
+		MultipartEntityBuilder data = addImage(reqEntity, imagePath);
+		data.addPart("confidence", new StringBody(minConfidence, ContentType.WILDCARD));
+		return new JSONObject(doPost(data.build(), host + "/v1/vision/" + model));
+	}
+
 	public String getNewFolder() {
 		return newFolder;
 	}
@@ -208,10 +263,40 @@ public class Client {
 		this.host = host;
 	}
 
-	public JSONObject detect(String model, String imagePath, String minConfidence) throws IOException {
-		MultipartEntityBuilder reqEntity = MultipartEntityBuilder.create().setMode(HttpMultipartMode.STRICT);
-		MultipartEntityBuilder data = addImage(reqEntity, imagePath);
-		data.addPart("confidence", new StringBody(minConfidence, ContentType.WILDCARD));
-		return new JSONObject(doPost(data.build(), host + "/v1/vision/" + model));
+	public String getMarkedFolder() {
+		return markedFolder;
 	}
+
+	public void setMarkedFolder(String markedFolder) {
+		this.markedFolder = markedFolder;
+	}
+
+	public String getLabeledFolder() {
+		return labeledFolder;
+	}
+
+	public void setLabeledFolder(String labeledFolder) {
+		this.labeledFolder = labeledFolder;
+	}
+
+	public String getDebugFolder() {
+		return debugFolder;
+	}
+
+	public void setDebugFolder(String debugFolder) {
+		this.debugFolder = debugFolder;
+	}
+
+	public Map<String, Integer> getClasses() {
+		return classes;
+	}
+
+	public void setClasses(Map<String, Integer> classes) {
+		this.classes = classes;
+		for (String k : classes.keySet()) {
+			if (classes.get(k) > lastCls)
+				lastCls = classes.get(k);
+		}
+	}
+
 }

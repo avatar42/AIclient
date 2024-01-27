@@ -7,6 +7,11 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import javax.imageio.ImageIO;
 
@@ -21,6 +26,30 @@ public class ClientTest {
 	private Client obj = new Client();
 	private String testFile1 = "animal/cat/cat_black/PTZ510.20230510_050201.9815571.3.jpg";
 	private String testFile2 = "animal/raccoon/HV420.20230722_214738243.2756.jpg";
+	private Map<String, Integer> classes = new HashMap<>();
+
+	public ClientTest() {
+		classes.put("raccoon", 2);
+		classes.put("cat_black", 10);
+		classes.put("cat_grey", 11);
+		classes.put("cat", 100);
+		classes.put("dog", 104);
+
+		obj.setClasses(classes);
+	}
+
+	/**
+	 * Quick check that classes where loaded into Client
+	 */
+	@Test
+	public void classesTest() {
+		assertEquals("classes loaded", this.classes.size(), obj.getClasses().size());
+		assertEquals("raccoon loaded", 2, (int) obj.getClasses().get("raccoon"));
+		assertEquals("cat_black loaded", 10, (int) obj.getClasses().get("cat_black"));
+		assertEquals("cat_grey loaded", 11, (int) obj.getClasses().get("cat_grey"));
+		assertEquals("cat loaded", 100, (int) obj.getClasses().get("cat"));
+		assertEquals("dog loaded", 104, (int) obj.getClasses().get("dog"));
+	}
 
 	/**
 	 * Basic Detect Test
@@ -69,7 +98,7 @@ public class ClientTest {
 		assertEquals("message wrong", "Found cat_grey", (String) resp.get("message"));
 
 		BufferedImage img = ImageIO.read(new File(obj.getNewFolder(), testFile1));
-		img = obj.markImg(null, img, ((JSONArray) resp.get("predictions")).getJSONObject(0), Color.BLUE);
+		img = obj.markImg("RMRR", img, resp.getJSONArray("predictions"), Color.BLUE);
 		obj.writeImg(obj.getMarkedFolder(), testFile1, img);
 	}
 
@@ -80,31 +109,43 @@ public class ClientTest {
 		// cat_grey","count":1,"predictions":[{"confidence":0.49429088830947876,"label":"cat_grey","x_min":383,"y_min":294,"x_max":512,"y_max":358}],"success":true,"processMs":730,"inferenceMs":730,"code":200,"command":"custom","moduleId":"ObjectDetectionYolo","executionProvider":"CPU","canUseGPU":false,"analysisRoundTripMs":750}
 		assertEquals("message wrong", "Found cat_grey", (String) resp.get("message"));
 
-		int matches = obj.cropImgs(new File(obj.getNewFolder(), testFile1), ((JSONArray) resp.get("predictions")));
+		int matches = obj.cropImgs(new File(obj.getNewFolder(), testFile1), resp.getJSONArray("predictions"), "RMRR");
 		assertEquals("matches", 0, matches);
 	}
 
 	@Test
-	public void complexMarkupTest() throws IOException {
-		BufferedImage img = ImageIO.read(new File(obj.getNewFolder(), testFile2));
+	public void complexTest() throws IOException {
+		File file = new File(obj.getNewFolder(), testFile2);
+		BufferedImage img = ImageIO.read(file);
 
 		JSONObject resp = obj.detect("custom/RMRR", testFile2, "0.45");
 		assertTrue("Class wrong", resp.getString("message").contains("raccoon"));
 		JSONArray predictions = resp.getJSONArray("predictions");
-		assertEquals("predictions", 7,predictions.length());
-		for (int i=0; i<predictions.length();i++) {
-			img = obj.markImg("RMRR", img, predictions.getJSONObject(i), Color.BLUE);
-		}
-//		obj.writeImg(obj.getMarkedFolder(), testFile1, img);
+		assertEquals("predictions", 7, predictions.length());
+		img = obj.markImg("RMRR", img, predictions, Color.BLUE);
+//		obj.writeImg(obj.getMarkedFolder(), testFile2, img);
+		int matches = obj.cropImgs(file, predictions, "RMRR");
+		assertEquals("matches", 4, matches);
+		obj.writeMap(file, predictions, "RMRR");
+		List<String> lines = Files
+				.readAllLines(Paths.get(obj.getMarkedFolder(), "RMRR" + "." + file.getName() + ".txt"));
+		assertEquals("found classes", 10, lines.size());
 
 		resp = obj.detect("detection", testFile2, "0.45");
 		assertTrue("Class wrong", resp.getString("message").contains("cat"));
 		predictions = resp.getJSONArray("predictions");
-		assertEquals("predictions", 5,predictions.length());
-		for (int i=0; i<predictions.length();i++) {
-			img = obj.markImg("detection", img, predictions.getJSONObject(i), Color.BLUE);
-		}
+		assertEquals("predictions", 5, predictions.length());
+		img = obj.markImg("detection", img, predictions, Color.BLUE);
 		obj.writeImg(obj.getMarkedFolder(), testFile2, img);
+		int matches2 = obj.cropImgs(file, predictions, "detection");
+		assertEquals("matches", 0, matches2);
+		obj.writeMap(file, predictions, "detection");
+
+		lines = Files.readAllLines(Paths.get(obj.getMarkedFolder(), "detection" + "." + file.getName() + ".txt"));
+		assertEquals("found classes", 5, lines.size());
+		assertEquals("total classes", 7, obj.getClasses().size());
+		
+		
 	}
 
 }
