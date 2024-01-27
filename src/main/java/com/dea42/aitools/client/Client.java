@@ -195,7 +195,7 @@ public class Client {
 			float xwidth = (float) (xmax - xmin) / w;
 			float yheight = (float) (ymax - ymin) / h;
 			String dcls = jobj.getString("label");
-			int idx = classes.getOrDefault(dcls,0);
+			int idx = classes.getOrDefault(dcls, 0);
 			if (idx == 0) {
 				classes.put(dcls, lastCls++);
 			}
@@ -204,7 +204,7 @@ public class Client {
 			int u = dcls.indexOf('_');
 			if (u > 0) {
 				dcls = dcls.substring(0, u);
-				idx = classes.getOrDefault(dcls,0);
+				idx = classes.getOrDefault(dcls, 0);
 				if (idx == 0) {
 					classes.put(dcls, lastCls++);
 				}
