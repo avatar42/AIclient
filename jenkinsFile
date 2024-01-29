@@ -46,6 +46,12 @@ pipeline {
                 }
             }
         }
+        stage("coverage") {
+            steps {
+                // Run Maven on a Unix agent.
+                sh "mvn verify"
+            }
+        }
         stage("Publish to Nexus Repository Manager") {
             steps {
                 script {
