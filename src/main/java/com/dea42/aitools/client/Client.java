@@ -10,6 +10,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
@@ -45,11 +46,13 @@ public class Client {
 	private static final Marker CLIENT_MARKER = MarkerFactory.getMarker("CLIENT_MARKER");
 	private final Logger log = LoggerFactory.getLogger(getClass());
 	private String newFolder = "./new";
+	private Path newFolderPath;
 	private String markedFolder = "./marked";
 	private String labeledFolder = "./labeled";
 	private String debugFolder = "./debug";
 	private Map<String, Integer> classes = new HashMap<>();
 	private int lastCls = 0;
+	private static final String CUSTOM ="custom/";
 
 	private String host = "http://10.10.2.183:32168";
 
@@ -61,6 +64,7 @@ public class Client {
 		this.labeledFolder = labeledFolder;
 		this.debugFolder = debugFolder;
 		this.classes = classes;
+		this.newFolderPath = Paths.get(this.newFolder);
 	}
 
 	public Client() {
@@ -80,6 +84,7 @@ public class Client {
 		} catch (Exception e) {
 			// ignore
 		}
+		this.newFolderPath = Paths.get(this.newFolder);
 	}
 
 	private String doPost(HttpEntity params, String url) throws IOException {
@@ -95,7 +100,7 @@ public class Client {
 
 			response = httpclient.execute(httppost);
 			int respCode = response.getStatusLine().getStatusCode();
-			log.info(CLIENT_MARKER, "response code:{}", respCode);
+			log.debug(CLIENT_MARKER, "response code:{}", respCode);
 			if (respCode == HttpStatus.SC_OK || respCode == HttpStatus.SC_MOVED_TEMPORARILY) {
 				HttpEntity entity = response.getEntity();
 				if (entity != null) {
@@ -104,7 +109,7 @@ public class Client {
 					for (byte b : responseStr.getBytes()) {
 						sb.append(String.format("%02x", b));
 					}
-					log.info(CLIENT_MARKER, "responseStr:{}", sb);
+					log.debug(CLIENT_MARKER, "responseStr:{}", sb);
 				}
 			}
 		} catch (URISyntaxException e) {
@@ -112,7 +117,7 @@ public class Client {
 		} finally {
 			httpclient.close();
 		}
-		log.info(CLIENT_MARKER, "responseStr:{}", responseStr);
+		log.debug(CLIENT_MARKER, "responseStr:{}", responseStr);
 		return responseStr;
 
 	}
@@ -174,7 +179,9 @@ public class Client {
 				matches++;
 			BufferedImage simg = img.getSubimage(x, y, width, height);
 			int conf = (int) (jobj.getFloat("confidence") * 100);
-			writeImg(getDebugFolder(), dcls + "/" + model + "." + i + "." + conf + "." + file.getName(), simg);
+			File out = new File(getDebugFolder(), dcls + "/" + model + "." + i + "." + conf + "." + file.getName());
+			writeImg(out, simg);
+			jobj.put("image", out.getPath());
 		}
 		return matches;
 	}
@@ -217,10 +224,9 @@ public class Client {
 					tags.toString().getBytes());
 	}
 
-	public void writeImg(String folder, String path, BufferedImage bufferedImage) throws IOException {
+	public void writeImg(File file, BufferedImage bufferedImage) throws IOException {
 		RenderedImage rendImage = bufferedImage;
 
-		File file = new File(folder, path);
 		File dir = file.getParentFile();
 		if (!dir.exists()) {
 			dir.mkdirs();
@@ -229,15 +235,19 @@ public class Client {
 	}
 
 	private MultipartEntityBuilder addImage(MultipartEntityBuilder reqEntity, String imageName) throws IOException {
-		File fileToUse = new File(newFolder, imageName);
+		File fileToUse = new File(imageName);
 		if (fileToUse.exists()) {
-			log.info(CLIENT_MARKER, "loading:{}", fileToUse);
+			log.debug(CLIENT_MARKER, "loading:{}", fileToUse);
 			FileBody data = new FileBody(fileToUse, ContentType.DEFAULT_BINARY, fileToUse.getName());
 
 			reqEntity.addPart("image", data);
 			return reqEntity;
 		}
 		throw new IOException(fileToUse.getAbsolutePath() + " does not exist");
+	}
+
+	public JSONObject detectCustom(String model, String imagePath, String minConfidence) throws IOException {
+		return detect(CUSTOM + model, imagePath, minConfidence);
 	}
 
 	public JSONObject detect(String model, String imagePath, String minConfidence) throws IOException {
@@ -247,12 +257,46 @@ public class Client {
 		return new JSONObject(doPost(data.build(), host + "/v1/vision/" + model));
 	}
 
+	/**
+	 * Load image from newPath, detect objects, create a marked up image, map and cropped images then return the details in an JSONObject 
+	 * @param newPath
+	 * @param model
+	 * @param minConfidence
+	 * @return JSONObject with details of what was found and file paths
+	 * @throws JSONException
+	 * @throws IOException
+	 */
+	public JSONObject loadImage(Path newPath, String model, String minConfidence) throws JSONException, IOException {
+		JSONObject details = new JSONObject();
+		File newFile = newPath.toFile();
+		Path basePath = newFolderPath.relativize(newPath);
+
+		BufferedImage img = ImageIO.read(newFile);
+
+		JSONObject resp = detect(model, newFile.getPath(), minConfidence);
+		if (model.startsWith(CUSTOM)) {
+			model = model.substring(CUSTOM.length());
+		}
+		
+		JSONArray predictions = resp.getJSONArray("predictions");
+		details.put("model", model);
+		details.put("detections", predictions);
+		markImg(model, img, predictions, Color.BLUE);
+		File markedFile = new File(getMarkedFolder(), basePath.toFile().getPath());
+		writeImg(markedFile, img);
+		cropImgs(newFile, predictions, model);
+		writeMap(newFile, predictions, model);
+
+		return details;
+	}
+
 	public String getNewFolder() {
 		return newFolder;
 	}
 
 	public void setNewFolder(String newFolder) {
 		this.newFolder = newFolder;
+		this.newFolderPath = Paths.get(this.newFolder);
 	}
 
 	public String getHost() {
